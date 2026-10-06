@@ -876,7 +876,14 @@ class KernelComponentFactoryGfx12(
         for p in pipelines:
             if p.F_qscale in wave64_only_qscale:
                 continue
-            out.append(dataclasses.replace(p, tag="qr") if p.tag == "qr_async" else p)
+            q = dataclasses.replace(p, tag="qr") if p.tag == "qr_async" else p
+            # gfx12: head-dim-padded variants clamp Q/K/V load alignment to 1 ->
+            # byte-granular buffer_load_u8 (VMEM issue overload, +VGPR). For naturally
+            # aligned hdim emit a wide-load (dpad/dvpad=f) variant first; dispatcher
+            # falls back to the padded byte-load variant when hdim isn't aligned.
+            if q.F_dpad == "t" and q.F_dvpad == "t":
+                out.append(dataclasses.replace(q, F_dpad="f", F_dvpad="f"))
+            out.append(q)
         return out
 
 class CustomFactory(KernelComponentFactoryGfx9, CompatibilityRuleFactoryGfx9):

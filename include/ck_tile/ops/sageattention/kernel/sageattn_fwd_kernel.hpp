@@ -454,11 +454,16 @@ struct SageAttnFwdKernel
         }
         else
         {
-            // TODO: this may need tuning
-            return dim3(nhead_,
-                        ck_tile::integer_divide_ceil(seqlen_q_, SageAttnPipeline::kM0) *
-                            ck_tile::integer_divide_ceil(hdim_v_, SageAttnPipeline::kN1),
-                        batch_size_);
+            // [swizzle] long-seqlen: q-tile as fastest grid dim so concurrent same-head
+            // q-tiles march through K/V together and reuse it in L2. Short seqlen keeps the
+            // original head-fastest order (better CU load balance when the grid is small).
+            const ck_tile::index_t num_m_ =
+                ck_tile::integer_divide_ceil(seqlen_q_, SageAttnPipeline::kM0) *
+                ck_tile::integer_divide_ceil(hdim_v_, SageAttnPipeline::kN1);
+            if(num_m_ >= 1024)
+                return dim3(num_m_, nhead_, batch_size_);
+            else
+                return dim3(nhead_, num_m_, batch_size_);
         }
     }
 
@@ -503,8 +508,12 @@ struct SageAttnFwdKernel
             const index_t num_tile_n1 =
                 ck_tile::integer_divide_ceil(kargs.hdim_v, SageAttnPipeline::kN1);
 
-            const index_t i_block = blockIdx.y; // blockIdx.x
-            const index_t i_nhead = blockIdx.x; // blockIdx.y
+            const index_t num_tile_m0 =
+                ck_tile::integer_divide_ceil(kargs.seqlen_q, SageAttnPipeline::kM0);
+            const bool swz = (num_tile_m0 * num_tile_n1) >= 1024; // match GridSize threshold
+
+            const index_t i_block = swz ? blockIdx.x : blockIdx.y;
+            const index_t i_nhead = swz ? blockIdx.y : blockIdx.x;
             const index_t i_batch = blockIdx.z;
 
             const auto f = [](index_t dividend, index_t divisor) {
@@ -518,7 +527,11 @@ struct SageAttnFwdKernel
             if constexpr(kHasMask)
             {
                 // assume that num_tile_n1 is always 1
-                return ck_tile::make_tuple(gridDim.y - 1 - i_tile_m, i_tile_n, i_nhead, i_batch);
+                // swizzle: ascending q-tile (cohort marches through K/V => better L2);
+                // baseline order keeps causal reversal for CU load balance.
+                const auto m_dim = swz ? gridDim.x : gridDim.y; // unsigned
+                const auto i_tm  = swz ? static_cast<unsigned>(i_tile_m) : (m_dim - 1 - i_tile_m);
+                return ck_tile::make_tuple(i_tm, i_tile_n, i_nhead, i_batch);
             }
             else
             {

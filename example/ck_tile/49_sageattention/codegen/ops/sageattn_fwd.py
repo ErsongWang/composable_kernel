@@ -846,6 +846,39 @@ class KernelComponentFactoryGfx950(
         return super().get_hdim_tile_size_dict(dtype)
 
 
+class KernelComponentFactoryGfx12(
+    KernelComponentFactoryGfx950, CompatibilityRuleFactoryGfx950
+):
+    arch = ArchTrait(
+        "gfx12",
+        device_name_check='device_name.compare(0, 5, "gfx12") == 0',
+    )
+
+    @classmethod
+    def _gfx12_tile(cls):
+        return SageAttnFwdTileSize(64, 64, 32, 128, 32, 128, 4, 1, 1, 4, 1, 1, 16, 16, 16, 16, 16, 16, -1)
+
+    @classmethod
+    def get_hdim_tile_size_dict(cls, dtype: str) -> Optional[dict]:
+        if dtype in cls._DT_BF16 or dtype in cls._DT_FP8BF16 or dtype in cls._DT_I8FP8BF16 or dtype in cls._DT_I4FP8BF16:
+            return {(128, 128): [cls._gfx12_tile()]}
+        return super().get_hdim_tile_size_dict(dtype)
+
+    @classmethod
+    def get_pipelines(cls, dtype, hdim, hdim_v, receipt, mask_impl):
+        # gfx12 WMMA: async global->LDS load intrinsic is invalid; use the sync qr pipeline.
+        import dataclasses
+        pipelines = super().get_pipelines(dtype, hdim, hdim_v, receipt, mask_impl)
+        # PERWARP/PERTHREAD q_descale is wave64/MFMA-only (see sageattn_fwd_kernel.hpp);
+        # skip those quant modes on gfx12 WMMA for now.
+        wave64_only_qscale = {"perwarp", "perthread"}
+        out = []
+        for p in pipelines:
+            if p.F_qscale in wave64_only_qscale:
+                continue
+            out.append(dataclasses.replace(p, tag="qr") if p.tag == "qr_async" else p)
+        return out
+
 class CustomFactory(KernelComponentFactoryGfx9, CompatibilityRuleFactoryGfx9):
     @classmethod
     def get_hdim_tile_size_dict(cls, dtype: str) -> Optional[dict]:
@@ -864,6 +897,8 @@ def get_factory(target: str):
 
     if target.startswith("gfx950"):
         return KernelComponentFactoryGfx950
+    if target.startswith("gfx12"):
+        return KernelComponentFactoryGfx12
     if target.startswith("gfx9"):
         return KernelComponentFactoryGfx9
 

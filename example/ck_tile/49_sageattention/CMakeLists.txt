@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: MIT
 
 set(INST_TARGETS ${SUPPORTED_GPU_TARGETS})
-# Currently only gfx9 arch is supported
-list(FILTER INST_TARGETS INCLUDE REGEX "gfx9")
+# SageAttention uses the same tile configuration for gfx9, gfx950, and gfx12.
+list(FILTER INST_TARGETS INCLUDE REGEX "gfx(9|12)")
 if(NOT INST_TARGETS)
-  message(WARNING "Skipping SageAttention compilation: No supported GPU targets (gfx9) found in SUPPORTED_GPU_TARGETS: ${SUPPORTED_GPU_TARGETS}")
+  message(WARNING "Skipping SageAttention compilation: No supported GPU targets (gfx9/gfx12) found in SUPPORTED_GPU_TARGETS: ${SUPPORTED_GPU_TARGETS}")
   return()
 endif()
 
